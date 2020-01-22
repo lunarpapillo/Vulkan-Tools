@@ -206,6 +206,7 @@ typedef struct {
     vk::ImageView view;
     vk::Buffer uniform_buffer;
     vk::DeviceMemory uniform_memory;
+    void *uniform_memory_ptr;
     vk::Framebuffer framebuffer;
     vk::DescriptorSet descriptor_set;
 } SwapchainImageResources;
@@ -263,7 +264,7 @@ struct Demo {
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
     void run();
     void create_window();
-#elif defined(VK_USE_PLATFORM_MACOS_MVK)
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
     void run();
 #elif defined(VK_USE_PLATFORM_DISPLAY_KHR)
     vk::Result create_display_surface();
@@ -294,8 +295,8 @@ struct Demo {
     wl_seat *seat;
     wl_pointer *pointer;
     wl_keyboard *keyboard;
-#elif (defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK))
-    void *window;
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+    void *caMetalLayer;
 #endif
 
     vk::SurfaceKHR surface;
@@ -646,6 +647,7 @@ void Demo::cleanup() {
         device.destroyImageView(swapchain_image_resources[i].view, nullptr);
         device.freeCommandBuffers(cmd_pool, 1, &swapchain_image_resources[i].cmd);
         device.destroyBuffer(swapchain_image_resources[i].uniform_buffer, nullptr);
+        device.unmapMemory(swapchain_image_resources[i].uniform_memory);
         device.freeMemory(swapchain_image_resources[i].uniform_memory, nullptr);
     }
 
@@ -827,9 +829,23 @@ void Demo::draw_build_cmd(vk::CommandBuffer commandBuffer) {
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, 1,
                                      &swapchain_image_resources[current_buffer].descriptor_set, 0, nullptr);
-
-    auto const viewport =
-        vk::Viewport().setWidth((float)width).setHeight((float)height).setMinDepth((float)0.0f).setMaxDepth((float)1.0f);
+    float viewport_dimension;
+    float viewport_x = 0.0f;
+    float viewport_y = 0.0f;
+    if (width < height) {
+        viewport_dimension = (float)width;
+        viewport_y = (height - width) / 2.0f;
+    } else {
+        viewport_dimension = (float)height;
+        viewport_x = (width - height) / 2.0f;
+    }
+    auto const viewport = vk::Viewport()
+                              .setX(viewport_x)
+                              .setY(viewport_y)
+                              .setWidth((float)viewport_dimension)
+                              .setHeight((float)viewport_dimension)
+                              .setMinDepth((float)0.0f)
+                              .setMaxDepth((float)1.0f);
     commandBuffer.setViewport(0, 1, &viewport);
 
     vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D(width, height));
@@ -1100,15 +1116,10 @@ void Demo::init_vk() {
                 platformSurfaceExtFound = 1;
                 extension_names[enabled_extension_count++] = VK_KHR_DISPLAY_EXTENSION_NAME;
             }
-#elif defined(VK_USE_PLATFORM_IOS_MVK)
-            if (!strcmp(VK_MVK_IOS_SURFACE_EXTENSION_NAME, instance_extensions[i].extensionName)) {
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+            if (!strcmp(VK_EXT_METAL_SURFACE_EXTENSION_NAME, instance_extensions[i].extensionName)) {
                 platformSurfaceExtFound = 1;
-                extension_names[enabled_extension_count++] = VK_MVK_IOS_SURFACE_EXTENSION_NAME;
-            }
-#elif defined(VK_USE_PLATFORM_MACOS_MVK)
-            if (!strcmp(VK_MVK_MACOS_SURFACE_EXTENSION_NAME, instance_extensions[i].extensionName)) {
-                platformSurfaceExtFound = 1;
-                extension_names[enabled_extension_count++] = VK_MVK_MACOS_SURFACE_EXTENSION_NAME;
+                extension_names[enabled_extension_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
             }
 
 #endif
@@ -1155,15 +1166,8 @@ void Demo::init_vk() {
                  "Do you have a compatible Vulkan installable client driver (ICD) installed?\n"
                  "Please look at the Getting Started guide for additional information.\n",
                  "vkCreateInstance Failure");
-#elif defined(VK_USE_PLATFORM_IOS_MVK)
-        ERR_EXIT("vkEnumerateInstanceExtensionProperties failed to find the " VK_MVK_IOS_SURFACE_EXTENSION_NAME
-                 " extension.\n\nDo you have a compatible "
-                 "Vulkan installable client driver (ICD) installed?\nPlease "
-                 "look at the Getting Started guide for additional "
-                 "information.\n",
-                 "vkCreateInstance Failure");
-#elif defined(VK_USE_PLATFORM_MACOS_MVK)
-        ERR_EXIT("vkEnumerateInstanceExtensionProperties failed to find the " VK_MVK_MACOS_SURFACE_EXTENSION_NAME
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+        ERR_EXIT("vkEnumerateInstanceExtensionProperties failed to find the " VK_EXT_METAL_SURFACE_EXTENSION_NAME
                  " extension.\n\nDo you have a compatible "
                  "Vulkan installable client driver (ICD) installed?\nPlease "
                  "look at the Getting Started guide for additional "
@@ -1300,18 +1304,11 @@ void Demo::create_surface() {
         auto result = inst.createXcbSurfaceKHR(&createInfo, nullptr, &surface);
         VERIFY(result == vk::Result::eSuccess);
     }
-#elif defined(VK_USE_PLATFORM_IOS_MVK)
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
     {
-        auto const createInfo = vk::IOSSurfaceCreateInfoMVK().setPView(nullptr);
+        auto const createInfo = vk::MetalSurfaceCreateInfoEXT().setPLayer(static_cast<CAMetalLayer *>(caMetalLayer));
 
-        auto result = inst.createIOSSurfaceMVK(&createInfo, nullptr, &surface);
-        VERIFY(result == vk::Result::eSuccess);
-    }
-#elif defined(VK_USE_PLATFORM_MACOS_MVK)
-    {
-        auto const createInfo = vk::MacOSSurfaceCreateInfoMVK().setPView(window);
-
-        auto result = inst.createMacOSSurfaceMVK(&createInfo, nullptr, &surface);
+        auto result = inst.createMetalSurfaceEXT(&createInfo, nullptr, &surface);
         VERIFY(result == vk::Result::eSuccess);
     }
 #elif defined(VK_USE_PLATFORM_DISPLAY_KHR)
@@ -1712,12 +1709,11 @@ void Demo::prepare_cube_data_buffers() {
         result = device.allocateMemory(&mem_alloc, nullptr, &swapchain_image_resources[i].uniform_memory);
         VERIFY(result == vk::Result::eSuccess);
 
-        auto pData = device.mapMemory(swapchain_image_resources[i].uniform_memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags());
-        VERIFY(pData.result == vk::Result::eSuccess);
+        result = device.mapMemory(swapchain_image_resources[i].uniform_memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags(),
+                                  &swapchain_image_resources[i].uniform_memory_ptr);
+        VERIFY(result == vk::Result::eSuccess);
 
-        memcpy(pData.value, &data, sizeof data);
-
-        device.unmapMemory(swapchain_image_resources[i].uniform_memory);
+        memcpy(swapchain_image_resources[i].uniform_memory_ptr, &data, sizeof data);
 
         result =
             device.bindBufferMemory(swapchain_image_resources[i].uniform_buffer, swapchain_image_resources[i].uniform_memory, 0);
@@ -2279,6 +2275,7 @@ void Demo::resize() {
         device.destroyImageView(swapchain_image_resources[i].view, nullptr);
         device.freeCommandBuffers(cmd_pool, 1, &swapchain_image_resources[i].cmd);
         device.destroyBuffer(swapchain_image_resources[i].uniform_buffer, nullptr);
+        device.unmapMemory(swapchain_image_resources[i].uniform_memory);
         device.freeMemory(swapchain_image_resources[i].uniform_memory, nullptr);
     }
 
@@ -2353,12 +2350,7 @@ void Demo::update_data_buffer() {
     mat4x4 MVP;
     mat4x4_mul(MVP, VP, model_matrix);
 
-    auto data = device.mapMemory(swapchain_image_resources[current_buffer].uniform_memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags());
-    VERIFY(data.result == vk::Result::eSuccess);
-
-    memcpy(data.value, (const void *)&MVP[0][0], sizeof(MVP));
-
-    device.unmapMemory(swapchain_image_resources[current_buffer].uniform_memory);
+    memcpy(swapchain_image_resources[current_buffer].uniform_memory_ptr, (const void *)&MVP[0][0], sizeof(MVP));
 }
 
 /* Convert ppm image data from header file into RGBA texture image */
@@ -2709,7 +2701,7 @@ void Demo::create_window() {
     wl_shell_surface_set_toplevel(shell_surface);
     wl_shell_surface_set_title(shell_surface, APP_SHORT_NAME);
 }
-#elif defined(VK_USE_PLATFORM_MACOS_MVK)
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
 void Demo::run() {
     draw();
     curFrame++;
@@ -3043,12 +3035,12 @@ int main(int argc, char **argv) {
     return validation_error;
 }
 
-#elif defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK)
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
 
 // Global function invoked from NS or UI views and controllers to create demo
-static void demo_main(struct Demo &demo, void *view, int argc, const char *argv[]) {
+static void demo_main(struct Demo &demo, void *caMetalLayer, int argc, const char *argv[]) {
     demo.init(argc, (char **)argv);
-    demo.window = view;
+    demo.caMetalLayer = caMetalLayer;
     demo.init_vk_swapchain();
     demo.prepare();
     demo.spin_angle = 0.4f;
